@@ -1,0 +1,37 @@
+{
+  "programs": [
+    {
+      "name": "Oculus Client",
+      "path": "C:\\Program Files\\Oculus\\Support\\oculus-client\\OculusClient.exe",
+      "arguments": "",
+      "has_splash_screen": true
+    },
+    {
+      "name": "SimHub",
+      "path": "C:\\Program Files (x86)\\SimHub\\SimHubWPF.exe",
+      "arguments": "",
+      "systray_only": true
+    },
+    {
+      "name": "OpenKneeboard",
+      "path": "C:\\Program Files\\OpenKneeboard\\bin\\OpenKneeboardApp.exe",
+      "arguments": ""
+    },
+    {
+      "name": "CrewChief",
+      "path": "C:\\Program Files (x86)\\Britton IT Ltd\\CrewChiefV4\\CrewChiefV4.exe",
+      "arguments": ""
+    },
+    {
+      "name": "TradingPaints",
+      "path": "C:\\Program Files (x86)\\Rhinode LLC\\Trading Paints\\Trading Paints.exe",
+      "arguments": ""
+    },
+    {
+      "name": "iRacing",
+      "path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\iRacing\\ui\\iRacingUI.exe",
+      "arguments": "",
+      "is_main": true
+    }
+  ]
+}
