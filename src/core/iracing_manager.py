@@ -60,12 +60,12 @@ class iRacingManager:
     All actions are logged to facilitate troubleshooting.
     """
 
-    def __init__(self, config_path: str = "config.json"):
+    def __init__(self, config_path: str = "config/config.json"):
         """
         Initializes the iRacing Manager.
 
         Args:
-            config_path (str): Path to the configuration file. Default is 'config.json'.
+            config_path (str): Path to the configuration file. Default is 'config/config.json'.
         """
         logger.info("Initializing iRacing Manager...")
         self._cleanup_done = False # Initialize cleanup flag
@@ -315,8 +315,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="iRacing Manager - Start and manage iRacing and helper applications.")
     parser.add_argument(
         "-c", "--config",
-        default="config.json",
-        help="Path to the configuration file (default: config.json)"
+        default="config/config.json",
+        help="Path to the configuration file (default: config/config.json)"
     )
     args = parser.parse_args()
 
