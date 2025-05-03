@@ -477,30 +477,3 @@ def setup_console_ui(logger: logging.Logger, max_log_messages: int = 10, test_mo
         sys.stderr = OutputRedirector(log_frame, logger, is_stderr=True)
     
     return handler
-
-
-# For testing purposes when run directly
-if __name__ == "__main__":
-    # Set up logging - but don't use basicConfig which sets up its own handlers
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
-    
-    # Make sure any existing handlers are removed
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
-    # Set up console UI - this will configure our custom handler
-    setup_console_ui(logger, test_mode=True)
-    
-    # Log some test messages
-    logger.info("Starting test application")
-    time.sleep(1)
-    logger.debug("This is a debug message")
-    time.sleep(1)
-    logger.info("Processing data...")
-    time.sleep(1)
-    logger.warning("Resource usage is high")
-    time.sleep(1)
-    logger.error("Failed to connect to server")
-    time.sleep(1)
-    logger.info("Test complete")

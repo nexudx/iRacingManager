@@ -293,27 +293,3 @@ class iRacingWatcher:
         """Returns True if the monitoring thread is currently active."""
         # Check the event flag and thread status
         return not self._stop_event.is_set() and self.watch_thread is not None and self.watch_thread.is_alive()
-
-
-# Comment out this test block to import it as a module more cleanly
-# if __name__ == "__main__":
-#     # Test code for directly executing this file
-#     def on_exit():
-#         print("iRacing has been terminated!")
-#
-#     # Fallback for tests: Use Notepad as "iRacing"
-#     import subprocess
-#     proc = subprocess.Popen(["notepad.exe"])
-#
-#     watcher = iRacingWatcher(on_exit_callback=on_exit)
-#     process_info = {"pid": proc.pid}
-#
-#     if watcher.find_iracing_process(process_info):
-#         watcher.start_watching()
-#
-#         print("Notepad simulates iRacing for the test.")
-#         print("Close Notepad to trigger the callback.")
-#
-#         # Wait until the monitoring thread is terminated
-#         while watcher.running:
-#             time.sleep(1.0)

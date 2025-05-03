@@ -31,15 +31,15 @@ py -m pip install psutil pywin32
 ```
 
 3. Download all files of the iRacing Manager and place them in a directory.
-4. Adjust the `config.json` according to your needs.
+4. Adjust the `config.json` according to your needs (copy from `config/example_config.json`).
 5. Create a desktop shortcut with the following target:
 
 ```
-pythonw <path_to_directory>\iracing_manager.py
+pythonw <path_to_directory>\src\core\iracing_manager.py
 ```
 or
 ```
-py -m pythonw <path_to_directory>\iracing_manager.py
+py -m pythonw <path_to_directory>\src\core\iracing_manager.py
 ```
 
 > **Note:** Use `pythonw` instead of `python` to hide the command line window.
@@ -123,7 +123,7 @@ The iRacing Manager provides special handling for certain program types:
 
 - **Programs with Splash Screen**: If programs open a new window after startup, set `"has_splash_screen": true` in the configuration.
 
-- **Oculus Client**: The Oculus Client has special handling. If problems occur, start the iRacing Manager with `py iracing_manager.py` from the command line to see debugging information.
+- **Oculus Client**: The Oculus Client has special handling. If problems occur, start the iRacing Manager with `py src/core/iracing_manager.py` from the command line to see debugging information.
 
 #### iRacing Not Being Detected or Monitored
 
@@ -134,27 +134,48 @@ Check if the correct path to iRacing is specified in the `config.json` and if `"
 When iRacing is closed, you can check the log to see if the monitoring worked properly. Start the iRacing Manager from the command line:
 
 ```
-py iracing_manager.py
+py src/core/iracing_manager.py
 ```
 
 This will show detailed log messages that can help with diagnosis.
 
 ## Development
 
-The iRacing Manager consists of several modules:
+The iRacing Manager consists of several modules organized in directories:
 
-- `iracing_manager.py`: Main program and coordination
-- `config_manager.py`: Management of the configuration file
-- `process_manager.py`: Starting, minimizing, and terminating programs
-- `iracing_watcher.py`: Monitoring the iRacing process
-- `config.json`: Configuration file
+### Directory Structure
+```
+iRacingManager/
+├── src/              # Source code
+│   ├── core/         # Core functionality
+│   │   ├── iracing_manager.py
+│   │   ├── iracing_watcher.py
+│   │   └── process_manager.py
+│   ├── ui/           # User interface
+│   │   └── console_ui.py
+│   ├── utils/        # Utility functions
+│   │   ├── process_utils.py
+│   │   ├── config_manager.py
+│   │   └── window_manager.py
+│   └── vr/           # VR/Oculus-specific code
+│       └── oculus_handler.py
+├── config/           # Configuration files
+│   └── example_config.json
+├── docs/             # Documentation
+│   └── README.md
+└── tests/            # Unit tests (for future development)
+```
 
-Functions and responsibilities:
+#### Module Responsibilities:
 
-- **iracing_manager.py**: Coordinates the entire process, starts programs in the correct order, and responds to the termination of iRacing.
-- **config_manager.py**: Reads and validates the configuration file, provides helper functions for retrieving program configurations.
-- **process_manager.py**: Takes care of starting, minimizing, and terminating programs, with special handling for certain program types like system tray programs and programs with splash screens.
-- **iracing_watcher.py**: Continuously monitors the iRacing process and notifies the manager when iRacing is terminated.
+- **src/core/iracing_manager.py**: Coordinates the entire process, starts programs in the correct order, and responds to the termination of iRacing.
+- **src/core/iracing_watcher.py**: Continuously monitors the iRacing process and notifies the manager when iRacing is terminated.
+- **src/core/process_manager.py**: Takes care of starting, minimizing, and terminating programs, with special handling for certain program types.
+- **src/ui/console_ui.py**: Provides the console user interface with framed logging display.
+- **src/utils/config_manager.py**: Reads and validates the configuration file, provides helper functions for retrieving program configurations.
+- **src/utils/process_utils.py**: Common utilities for process management across modules.
+- **src/utils/window_manager.py**: Handles finding and manipulating application windows.
+- **src/vr/oculus_handler.py**: Specialized handling for Oculus/VR processes.
 
 If you want to make changes or extensions, you can adapt the corresponding modules.
 

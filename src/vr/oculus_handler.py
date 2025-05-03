@@ -13,8 +13,8 @@ import time
 import logging
 from typing import Dict, Any, Optional, Callable
 
-from process_utils import WINDOWS_IMPORTS_AVAILABLE
-from window_manager import WindowManager
+from src.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE
+from src.utils.window_manager import WindowManager
 
 # Set up logger
 logger = logging.getLogger("OculusHandler")

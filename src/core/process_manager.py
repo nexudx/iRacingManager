@@ -21,10 +21,10 @@ import os
 import sys
 from typing import Dict, List, Any, Optional, Tuple
 
-# Import our refactored modules
-from process_utils import WINDOWS_IMPORTS_AVAILABLE, check_windows_requirements
-from window_manager import WindowManager
-from oculus_handler import OculusHandler, OCULUS_CLIENT_NAME
+# Import our refactored modules with updated paths
+from src.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE, check_windows_requirements
+from src.utils.window_manager import WindowManager
+from src.vr.oculus_handler import OculusHandler, OCULUS_CLIENT_NAME
 
 # Set up logger - Configuration should be done in the main entry point
 logger = logging.getLogger("ProcessManager")

@@ -14,7 +14,7 @@ import time
 import logging
 from typing import List
 
-from process_utils import WINDOWS_IMPORTS_AVAILABLE
+from src.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE
 
 # Set up logger
 logger = logging.getLogger("WindowManager")

@@ -28,11 +28,11 @@ import threading
 import argparse # Import argparse
 from typing import Dict, List, Any, Optional
 
-# Import the other modules
-from config_manager import ConfigManager, ConfigError # Import ConfigError
-from process_manager import ProcessManager
-from iracing_watcher import iRacingWatcher
-from console_ui import setup_console_ui
+# Import the other modules - updated imports for new structure
+from src.utils.config_manager import ConfigManager, ConfigError
+from src.core.process_manager import ProcessManager
+from src.core.iracing_watcher import iRacingWatcher
+from src.ui.console_ui import setup_console_ui
 
 # Set up logger but don't add handlers yet - the console UI will handle that
 logger = logging.getLogger("iRacingManager")
