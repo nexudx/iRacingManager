@@ -32,14 +32,14 @@ from typing import Dict, List, Any, Optional
 from config_manager import ConfigManager, ConfigError # Import ConfigError
 from process_manager import ProcessManager
 from iracing_watcher import iRacingWatcher
+from console_ui import setup_console_ui
 
-# Set up logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+# Set up logger but don't add handlers yet - the console UI will handle that
 logger = logging.getLogger("iRacingManager")
+logger.setLevel(logging.INFO)
+
+# We'll set up the console UI in the main function to ensure proper initialization order
+# This will also properly redirect all output through our frame
 
 
 class iRacingManager:
@@ -274,8 +274,6 @@ class iRacingManager:
         The method implements a robust main loop that continuously
         monitors whether the iRacing process is still active and reacts accordingly.
         """
-        logger.info("=== iRacing Manager ===")
-        
         # Start all programs
         if not self.start_programs():
             logger.error("Error starting the programs. Exiting...")
@@ -306,9 +304,10 @@ def main() -> None:
     
     This function:
     1. Parses command line arguments for an optional configuration path.
-    2. Creates an instance of iRacingManager.
-    3. Starts the main method run().
-    4. Catches configuration errors and unexpected exceptions, logs them, and exits.
+    2. Sets up the console UI with logo and framed log display.
+    3. Creates an instance of iRacingManager.
+    4. Starts the main method run().
+    5. Catches configuration errors and unexpected exceptions, logs them, and exits.
 
     The function ensures clean error handling at the top level
     and is the main entry point of the program when directly executed.
@@ -322,6 +321,9 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
+        # Set up the console UI with the ASCII logo and framed log display
+        setup_console_ui(logger)
+        
         # Create the iRacing Manager instance using the parsed config path
         manager = iRacingManager(config_path=args.config)
 
