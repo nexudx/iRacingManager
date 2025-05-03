@@ -108,6 +108,26 @@ The iRacing Manager provides special handling for certain program types:
 2. The iRacing Manager automatically starts all configured programs.
 3. When you're done, simply close iRacing, and all other programs will be automatically terminated.
 
+### Command Line Usage
+
+You can also start the iRacing Manager from the command line:
+
+```bash
+# Normal mode - starts actual programs
+python main.py
+
+# Specify a different configuration file
+python main.py --config my_custom_config.json
+
+# Test mode - uses mock processes, no real programs will be started
+python main.py --test
+
+# Test mode with custom delay for simulating iRacing exit
+python main.py --test --delay 10  # Wait 10 seconds before simulating iRacing exit
+```
+
+Running in test mode is useful for verifying your configuration and testing the functionality without starting actual programs.
+
 ## Troubleshooting
 
 ### Common Problems
@@ -139,6 +159,69 @@ py src/core/iracing_manager.py
 
 This will show detailed log messages that can help with diagnosis.
 
+## Testing Framework
+
+The iRacing Manager includes a comprehensive testing framework that allows you to test the application functionality without starting actual programs. This is particularly useful for development and debugging.
+
+### Test Components
+
+The testing framework consists of the following components:
+
+- **mock_process.py**: Provides mock implementations of subprocess.Popen and psutil.Process to simulate program behavior without starting real processes
+- **mock_windows.py**: Simulates Windows API functions for working with application windows
+- **test_runner.py**: Contains test cases for different parts of the iRacing Manager
+- **mock_main.py**: Alternative entry point that runs the iRacing Manager with mocked components
+- **test_config.json**: Test configuration file with mock program entries
+
+### Running Tests
+
+To run the automated test suite:
+
+```bash
+python tests/test_runner.py
+```
+
+You can run specific tests using the `--test` parameter:
+
+```bash
+python tests/test_runner.py --test workflow  # Run the full workflow test
+python tests/test_runner.py --test init      # Test initialization only
+python tests/test_runner.py --test start     # Test program start only
+```
+
+### Using Mock Mode for Development
+
+The mock mode allows you to run the iRacing Manager without starting actual programs, which is useful for development and debugging:
+
+```bash
+python tests/mock_main.py
+```
+
+By default, mock_main.py will:
+1. Start all programs defined in the test configuration
+2. Create mock windows for each process
+3. After 5 seconds, simulate iRacing closing (which will trigger termination of all other mock programs)
+
+You can control the delay before simulating iRacing exit:
+
+```bash
+python tests/mock_main.py --delay 10  # Wait 10 seconds before simulating iRacing exit
+```
+
+Or prevent automatic iRacing exit simulation:
+
+```bash
+python tests/mock_main.py --no-auto-exit  # Run without auto-exit, you can then manually test functionality
+```
+
+### Test Extensions
+
+The testing framework is designed to be extensible. You can:
+
+1. Add new test cases to test_runner.py
+2. Create mock configurations in test_config.json to test different program combinations
+3. Extend the mock classes to simulate more complex behaviors
+
 ## Development
 
 The iRacing Manager consists of several modules organized in directories:
@@ -163,7 +246,13 @@ iRacingManager/
 │   └── example_config.json
 ├── docs/             # Documentation
 │   └── README.md
-└── tests/            # Unit tests (for future development)
+└── tests/            # Test framework
+    ├── __init__.py
+    ├── mock_process.py
+    ├── mock_windows.py
+    ├── test_runner.py
+    ├── mock_main.py
+    └── test_config.json
 ```
 
 #### Module Responsibilities:
@@ -176,6 +265,10 @@ iRacingManager/
 - **src/utils/process_utils.py**: Common utilities for process management across modules.
 - **src/utils/window_manager.py**: Handles finding and manipulating application windows.
 - **src/vr/oculus_handler.py**: Specialized handling for Oculus/VR processes.
+- **tests/mock_process.py**: Provides mock subprocess and psutil implementations.
+- **tests/mock_windows.py**: Provides mock Windows API implementations.
+- **tests/test_runner.py**: Contains test cases for the iRacing Manager.
+- **tests/mock_main.py**: Runs the iRacing Manager with mock components.
 
 If you want to make changes or extensions, you can adapt the corresponding modules.
 
