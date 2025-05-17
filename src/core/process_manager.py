@@ -24,8 +24,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Any, Optional, Tuple
 
 # Import our refactored modules with updated paths
-from src.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE, check_windows_requirements
-from src.utils.window_manager import WindowManager
+from src.core.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE, check_windows_requirements
+from src.core.utils.window_manager import WindowManager
 
 
 # Set up logger - Configuration should be done in the main entry point

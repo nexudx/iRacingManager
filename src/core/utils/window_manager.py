@@ -13,7 +13,7 @@ import time
 import logging
 from typing import List
 
-from src.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE
+from src.core.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE
 
 # Set up logger
 logger = logging.getLogger("WindowManager")
