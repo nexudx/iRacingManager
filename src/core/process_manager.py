@@ -19,16 +19,22 @@ import time
 import logging
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Any, Optional, Tuple
 
 # Import our refactored modules with updated paths
 from src.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE, check_windows_requirements
 from src.utils.window_manager import WindowManager
-from src.vr.oculus_handler import OculusHandler, OCULUS_CLIENT_NAME
+
 
 # Set up logger - Configuration should be done in the main entry point
 logger = logging.getLogger("ProcessManager")
 
+# Constants for persistent minimization
+DEFAULT_MAX_MINIMIZE_ATTEMPTS = 15  # e.g., 15 attempts
+DEFAULT_MINIMIZE_RETRY_DELAY = 2.0  # e.g., 2 seconds delay
+DEFAULT_PROGRAM_START_TIMEOUT = 60 # e.g. 60 seconds for a program to start and its window to appear
 class ProcessManager:
     """
     Main class for managing processes for the iRacing Manager.
@@ -43,11 +49,14 @@ class ProcessManager:
         Initializes the ProcessManager.
         """
         self.processes: Dict[str, Dict[str, Any]] = {}
-        self.non_minimized_windows: Dict[str, Dict[str, Any]] = {}
         self._terminated_programs: set[str] = set()
         self._window_manager = WindowManager()
-        self._oculus_handler = OculusHandler()
         self._check_requirements()
+        self.program_start_threads: List[threading.Thread] = []
+        self.main_program_proc: Optional[subprocess.Popen] = None
+        self.main_program_name: Optional[str] = None
+        # For managing parallel startup of helper apps
+        self.helper_app_futures = []
 
     def _check_requirements(self) -> None:
         """
@@ -56,155 +65,231 @@ class ProcessManager:
         if not check_windows_requirements():
             sys.exit(1)
 
-    def start_program(self, program_config: Dict[str, Any]) -> Tuple[bool, Optional[subprocess.Popen]]:
+    def _handle_program_startup_and_minimization(self, program_config: Dict[str, Any]) -> Tuple[bool, Optional[subprocess.Popen], str]:
         """
-        Starts a program based on the configuration and minimizes it if necessary.
-
-        This method:
-        1. Extracts path and parameters from the configuration
-        2. Checks if the executable file exists
-        3. Starts the process with redirected output
-        4. Performs special handling for Oculus Client (monitoring thread)
-        5. Minimizes the program window if required
-        6. Stores process information for later use
-
-        Args:
-            program_config (Dict[str, Any]): The program configuration from config.json
-                                             with parameters like "name", "path", "arguments", etc.
-
-        Returns:
-            Tuple[bool, Optional[subprocess.Popen]]:
-                - True and process object on success
-                - False and None on error
+        Handles the startup of a single program and its minimization if it's a helper app.
+        This method is intended to be run in a separate thread for helper applications.
         """
         name = program_config["name"]
         path = program_config["path"]
         arguments = program_config.get("arguments", "").strip()
         is_main = program_config.get("is_main", False)
 
-        # Check if the executable file exists
         if not os.path.exists(path):
             logger.error(f"Could not start '{name}'. Path does not exist: {path}")
-            return False, None
+            return False, None, name
 
         try:
             cmd = [path]
             if arguments:
                 cmd += arguments.split()
             
-            logger.info(f"Starting program: {name}")
+            logger.info(f"Starting program: {name} (is_main: {is_main})")
             
-            # Redirect the output for all programs to avoid disruptive console messages.
-            # TODO: Consider making output redirection configurable (e.g., via config.json)
-            # Use subprocess.DEVNULL for cleaner output redirection (Python 3.3+)
+            creation_flags = subprocess.CREATE_NO_WINDOW
+            stdout_pipe = subprocess.DEVNULL
+            stderr_pipe = subprocess.DEVNULL
+
+            if is_main:
+                logger.info(f"Launching main program '{name}' with visible window. Output will be redirected to DEVNULL.")
+                creation_flags = 0 # Default flags, should show window
+            
             proc = subprocess.Popen(
                 cmd,
                 shell=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW # Attempt to prevent console window flashing
+                stdout=stdout_pipe,
+                stderr=stderr_pipe,
+                creationflags=creation_flags
             )
 
-            # Special handling for Oculus Client - start monitoring thread
-            if name == OCULUS_CLIENT_NAME:
-                logger.info(f"Special handling for {OCULUS_CLIENT_NAME} (PID: {proc.pid}). Starting monitor thread.")
-                # Give Oculus a moment to potentially create its initial process structures
-                time.sleep(1.0)
-                self._oculus_handler.start_oculus_monitor_thread(name, proc.pid)
-            else:
-                # Standard wait for other programs to potentially create windows
-                time.sleep(0.5)
+            if is_main:
+                # Add a small delay and check if the main program is still running
+                time.sleep(2.0) # Wait 2 seconds
+                if proc.poll() is not None:
+                    logger.error(f"Main program '{name}' (PID: {proc.pid}) terminated shortly after launch with exit code {proc.returncode}.")
+                    # Attempt to read stdout/stderr if not DEVNULL (though we set them to None for main)
+                    # This part might be tricky if they were not piped.
+                    # For now, the direct console output from iRacing is the primary debug info.
+                    return False, proc, name # Indicate failure
 
-            # Minimize the window if it's not the main program
-            was_minimized = True
-            if not is_main:
-                # Check if the program is marked as systray_only
-                if program_config.get("systray_only", False):
-                    logger.info(f"Program '{name}' starts directly in the system tray, skipping minimization.")
-                else:
-                    was_minimized = self._window_manager.minimize_window(proc.pid, name)
-                    if not was_minimized:
-                        # Note that the window should be minimized later
-                        self.non_minimized_windows[name] = {"pid": proc.pid, "has_splash_screen": program_config.get("has_splash_screen", False)}
-            
-            # Store process information
+            # Store process information immediately
+            # 'was_minimized' will be updated by the minimization logic for helper apps
             self.processes[name] = {
                 "process": proc,
                 "pid": proc.pid,
                 "config": program_config,
-                "was_minimized": was_minimized
+                "was_minimized": True if is_main else False # Main apps are not minimized by this system
             }
-            
-            logger.info(f"Program '{name}' successfully started (PID: {proc.pid})")
-            return True, proc
-            
-        except Exception as e:
-            logger.error(f"Error starting '{name}': {e}")
-            return False, None
+            logger.info(f"Program '{name}' (PID: {proc.pid}) started successfully.")
 
-    def retry_minimize_all(self) -> None:
-        """
-        Attempts to minimize programs whose windows were not found or minimized initially.
-
-        Iterates through the list of programs marked as not minimized and calls
-        `_minimize_window` again for each.
-        """
-        if not self.non_minimized_windows:
-            logger.debug("No programs pending retry minimization.")
-            return
-
-        logger.info(f"Retrying minimization for {len(self.non_minimized_windows)} program(s)...")
-
-        successfully_minimized_this_round = []
-
-        # Iterate over a copy of the items, as we might modify the dict
-        for name, info in list(self.non_minimized_windows.items()):
-            pid = info.get("pid")
-            if pid is None:
-                logger.warning(f"Skipping retry for '{name}': PID missing.")
-                # Remove from retry list if PID is missing
-                if name in self.non_minimized_windows:
-                    del self.non_minimized_windows[name]
-                continue
-
-            # Check if the process still exists before retrying
-            try:
-                if WINDOWS_IMPORTS_AVAILABLE:
-                    import psutil
-                    if not psutil.pid_exists(pid):
-                        logger.info(f"Skipping retry for '{name}' (PID: {pid}): Process no longer exists.")
-                        # Remove from retry list if process is gone
-                        if name in self.non_minimized_windows:
-                            del self.non_minimized_windows[name]
-                        continue
-            except Exception as e:
-                logger.warning(f"Error checking PID existence for '{name}' (PID: {pid}): {e}. Skipping retry.")
-                if name in self.non_minimized_windows:
-                    del self.non_minimized_windows[name]
-                continue
-
-            logger.info(f"Retrying minimization for '{name}' (PID: {pid})...")
-
-            # Call the window manager's minimize function
-            if self._window_manager.minimize_window(pid, name, max_attempts=8, retry_delay=1.5):
-                successfully_minimized_this_round.append(name)
-                if name in self.processes:
-                    self.processes[name]["was_minimized"] = True
+            if not is_main:
+                # For helper apps, attempt persistent minimization
+                # Allow some time for the process to initialize and potentially create its window
+                time.sleep(program_config.get("initial_delay_before_minimize_s", 2.0)) # Configurable initial delay
+                
+                starts_in_tray = program_config.get("starts_in_tray", False) # Get the flag
+                minimized_successfully = self._minimize_program_persistently(
+                    pid=proc.pid,
+                    program_name=name,
+                    starts_in_tray=starts_in_tray, # Pass the flag
+                    max_attempts=program_config.get("max_minimize_attempts", DEFAULT_MAX_MINIMIZE_ATTEMPTS),
+                    retry_delay=program_config.get("minimize_retry_delay_s", DEFAULT_MINIMIZE_RETRY_DELAY),
+                    timeout_seconds=program_config.get("minimize_timeout_s", DEFAULT_PROGRAM_START_TIMEOUT)
+                )
+                if name in self.processes: # Check if process still exists (could have been terminated)
+                    self.processes[name]["was_minimized"] = minimized_successfully
             else:
-                # Log failure for this specific program during retry
-                logger.warning(f"Retry minimization failed for '{name}' (PID: {pid}).")
+                # This is the main program
+                self.main_program_proc = proc
+                self.main_program_name = name
+            
+            return True, proc, name
+        except Exception as e:
+            logger.error(f"Error starting or handling '{name}': {e}")
+            # Ensure it's removed from processes if it failed to start properly
+            if name in self.processes:
+                del self.processes[name]
+            return False, None, name
 
-        # Remove successfully minimized programs from the retry list
-        for name in successfully_minimized_this_round:
-            if name in self.non_minimized_windows:
-                del self.non_minimized_windows[name]
+    def _minimize_program_persistently(self, pid: int, program_name: str, starts_in_tray: bool, max_attempts: int, retry_delay: float, timeout_seconds: float) -> bool:
+        """
+        Persistently attempts to minimize a program's window(s), unless configured to start in tray.
 
-        # Log final status
-        if self.non_minimized_windows:
-            remaining_names = list(self.non_minimized_windows.keys())
-            logger.warning(f"{len(self.non_minimized_windows)} program(s) remain unminimized after retry: {remaining_names}")
+        This method will:
+        1. Check if the program is configured to start in the system tray. If so, skip minimization.
+        2. Loop for a specified number of attempts or until a timeout is reached.
+        3. In each iteration, try to find and minimize the program's windows.
+        4. Use `self._window_manager.minimize_window` which has its own retry logic for finding/minimizing.
+        5. Log attempts, successes, and failures.
+        """
+        if starts_in_tray:
+            logger.info(f"'{program_name}' (PID: {pid}) is configured to start in tray, skipping active window minimization.")
+            return True
+
+        logger.info(f"Initiating persistent minimization for '{program_name}' (PID: {pid}). Max attempts: {max_attempts}, Retry delay: {retry_delay}s, Timeout: {timeout_seconds}s.")
+        
+        start_time = time.time()
+        for attempt in range(1, max_attempts + 1):
+            if time.time() - start_time > timeout_seconds:
+                logger.warning(f"Minimization for '{program_name}' (PID: {pid}) timed out after {timeout_seconds}s.")
+                return False
+
+            # Check if the process still exists
+            if not self._is_pid_running(pid):
+                logger.info(f"Process '{program_name}' (PID: {pid}) is no longer running. Stopping minimization attempts.")
+                return False # Or True if we consider a non-running process as "handled"
+
+            logger.info(f"Attempt {attempt}/{max_attempts} to minimize '{program_name}' (PID: {pid}).")
+            
+            # We use minimize_window from WindowManager as it already contains logic
+            # to find and attempt to minimize windows with its own internal retries.
+            # The 'max_attempts' here refers to how many times we call this robust function.
+            # We can configure the inner attempts of minimize_window to be small (e.g. 1-2)
+            # if we want this outer loop to be the main retry controller.
+            # For now, let's assume minimize_window is configured reasonably.
+            if self._window_manager.minimize_window(pid, program_name, max_attempts=3, retry_delay=0.5): # Using short inner attempts
+                logger.info(f"Successfully minimized '{program_name}' (PID: {pid}) on attempt {attempt}.")
+                return True
+            
+            logger.debug(f"Minimization attempt {attempt} for '{program_name}' (PID: {pid}) did not confirm success. Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+
+        logger.warning(f"Failed to minimize '{program_name}' (PID: {pid}) after {max_attempts} attempts.")
+        return False
+
+    def _is_pid_running(self, pid: int) -> bool:
+        """Checks if a process with the given PID is running."""
+        if not WINDOWS_IMPORTS_AVAILABLE:
+            # Cannot check without psutil on Windows, assume running to proceed
+            # Or, could check self.processes if the Popen object is still valid
+            return True
+        try:
+            import psutil
+            return psutil.pid_exists(pid)
+        except ImportError:
+            logger.warning("psutil is not installed. Cannot accurately check if PID is running.")
+            # Fallback: Check if we have a Popen object and if it hasn't terminated
+            for p_name, p_info in self.processes.items():
+                if p_info["pid"] == pid:
+                    return p_info["process"].poll() is None
+            return False # PID not found in our managed processes
+        except Exception as e:
+            logger.error(f"Error checking PID {pid} existence: {e}")
+            return False # Assume not running on error
+
+    def start_all_programs(self, program_configs: List[Dict[str, Any]], parallel_workers: int = 4) -> None:
+        """
+        Starts all configured programs. Main program is started first, then helper
+        programs are started in parallel.
+        """
+        main_program_config = None
+        helper_program_configs = []
+
+        for config in program_configs:
+            if config.get("is_main", False):
+                if main_program_config:
+                    logger.warning("Multiple main programs defined. Using the first one.")
+                    helper_program_configs.append(config) # Treat subsequent "main" as helper
+                else:
+                    main_program_config = config
+            else:
+                helper_program_configs.append(config)
+
+        # Start the main program first and wait for it
+        if main_program_config:
+            logger.info(f"Starting main program: {main_program_config['name']}")
+            success, proc, name = self._handle_program_startup_and_minimization(main_program_config)
+            if not success:
+                logger.error(f"Main program '{name}' failed to start. Aborting helper app startup.")
+                return # Or handle more gracefully depending on requirements
+            self.main_program_proc = proc
+            self.main_program_name = name
         else:
-            logger.info("Retry minimization round completed. All pending programs minimized or removed.")
+            logger.info("No main program defined. Starting only helper applications.")
+
+        # Start helper programs in parallel
+        if helper_program_configs:
+            logger.info(f"Starting {len(helper_program_configs)} helper program(s) in parallel with {parallel_workers} workers...")
+            # Clear previous futures if any
+            self.helper_app_futures.clear()
+
+            with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+                for config in helper_program_configs:
+                    future = executor.submit(self._handle_program_startup_and_minimization, config)
+                    self.helper_app_futures.append(future)
+                
+                # Optionally, wait for all helper apps to complete their startup and initial minimization attempt
+                # This loop also helps in retrieving results or exceptions from threads
+                for future in as_completed(self.helper_app_futures):
+                    try:
+                        success, proc_obj, prog_name = future.result()
+                        if success:
+                            logger.info(f"Helper program '{prog_name}' (PID: {proc_obj.pid if proc_obj else 'N/A'}) finished startup sequence.")
+                        else:
+                            logger.warning(f"Helper program '{prog_name}' failed or had issues during startup sequence.")
+                    except Exception as exc:
+                        logger.error(f"A helper program generated an exception during startup: {exc}")
+        else:
+            logger.info("No helper programs to start.")
+        
+        logger.info("All program startup sequences initiated.")
+
+    def wait_for_main_program_exit(self, timeout: Optional[float] = None) -> None:
+        """
+        Waits for the main program to exit.
+        """
+        if self.main_program_proc:
+            logger.info(f"Waiting for main program '{self.main_program_name}' (PID: {self.main_program_proc.pid}) to exit...")
+            try:
+                self.main_program_proc.wait(timeout=timeout)
+                logger.info(f"Main program '{self.main_program_name}' has exited.")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Timeout waiting for main program '{self.main_program_name}' to exit.")
+            except Exception as e:
+                logger.error(f"Error waiting for main program '{self.main_program_name}': {e}")
+        else:
+            logger.info("No main program was started or it already exited.")
+
 
     def terminate_program(self, program_name: str) -> bool:
         """
@@ -275,9 +360,10 @@ class ProcessManager:
             if program_name in self.processes:
                 del self.processes[program_name]
             
-            # If the program is in the non-minimized list, remove it from there too
-            if program_name in self.non_minimized_windows:
-                del self.non_minimized_windows[program_name]
+            # If the program is in the non-minimized list, remove it from there too - This list is removed
+            # No longer need to check non_minimized_windows
+            # if program_name in self.non_minimized_windows:
+            #     del self.non_minimized_windows[program_name]
                 
             return True
             
@@ -287,8 +373,9 @@ class ProcessManager:
             # Even in case of error, remove from the list to avoid repeated termination attempts
             if program_name in self.processes:
                 del self.processes[program_name]
-            if program_name in self.non_minimized_windows:
-                del self.non_minimized_windows[program_name]
+            # No longer need to check non_minimized_windows
+            # if program_name in self.non_minimized_windows:
+            #     del self.non_minimized_windows[program_name]
                 
             return False
 
@@ -311,9 +398,6 @@ class ProcessManager:
         
         logger.info("Terminating all started programs...")
         
-        # Stop any running Oculus monitor threads
-        self._oculus_handler.stop_all_monitors()
-        
         # Copy the key list since we'll be removing elements during iteration
         program_names = list(self.processes.keys())
         
@@ -323,10 +407,27 @@ class ProcessManager:
                 self.terminate_program(name)
         
         # After termination, ensure all lists are actually empty
-        self.processes = {}
-        self.non_minimized_windows = {}
+        self.processes.clear() # More direct way to empty
+        # self.non_minimized_windows.clear() # This list is removed
+        self._terminated_programs.clear() # Ensure this is also cleared
         
-        logger.info("All programs have been terminated.")
+        # Wait for any helper app threads to finish if they are still running (e.g. if terminate_all is called early)
+        # This is a bit tricky as threads might be in Popen.wait() or time.sleep()
+        # For simplicity, we're not forcefully stopping threads here, assuming terminate_program handles Popen objects.
+        # A more robust solution might involve signaling threads to exit.
+        if self.helper_app_futures:
+            logger.debug("Attempting to ensure helper app threads complete after termination signal.")
+            # Wait for a short period for futures to complete if they haven't already
+            for future in self.helper_app_futures:
+                if not future.done():
+                    try:
+                        future.result(timeout=0.1) # Short timeout
+                    except: # Catch any exception, including TimeoutError
+                        pass
+            self.helper_app_futures.clear()
+
+
+        logger.info("All programs have been terminated and ProcessManager state cleared.")
 
     def is_program_running(self, program_name: str) -> bool:
         """
@@ -358,17 +459,28 @@ class ProcessManager:
             else:
                 # Remove no longer running programs from the list
                 del self.processes[name]
-                # Also remove from the non-minimized list if present
-                if name in self.non_minimized_windows:
-                    del self.non_minimized_windows[name]
+                # Also remove from the non-minimized list if present - This list is removed
+                # if name in self.non_minimized_windows:
+                #     del self.non_minimized_windows[name]
                 
         return running_programs
 
     def reset(self) -> None:
         """
-        Resets the ProcessManager, clearing all lists.
+        Resets the ProcessManager, clearing all lists and stopping threads if any.
+        Note: This is a simple reset. For full cleanup during application exit,
+        `terminate_all_programs` should be used.
         """
+        logger.info("Resetting ProcessManager state.")
+        # Terminate any running programs first before clearing lists
+        self.terminate_all_programs()
+
         self.processes.clear()
-        self.non_minimized_windows.clear()
+        # self.non_minimized_windows.clear() # This list is removed
         self._terminated_programs.clear()
-        self._oculus_handler.stop_all_monitors()
+        self.main_program_proc = None
+        self.main_program_name = None
+        
+        # Ensure futures list is cleared
+        if hasattr(self, 'helper_app_futures'):
+            self.helper_app_futures.clear()

@@ -161,42 +161,42 @@ class iRacingManager:
             bool: True if all programs were successfully started, otherwise False
         """
         logger.info("Starting all configured programs...")
-        programs = self.config_manager.get_programs()
-        main_program = self.config_manager.get_main_program()
+        all_program_configs = self.config_manager.get_programs() # Get all program configs
         
-        # Collect the non-iRacing programs
-        other_programs = [program for program in programs if program != main_program]
-        
-        # First start the other programs
-        logger.info(f"Starting {len(other_programs)} helper programs...")
-        for program in other_programs:
-            name = program["name"]
+        # The ProcessManager.start_all_programs will handle main vs helper apps
+        # It also handles parallel startup and minimization.
+        self.process_manager.start_all_programs(all_program_configs)
+
+        # After start_all_programs, ProcessManager should have main_program_proc and main_program_name populated
+        if self.process_manager.main_program_proc and self.process_manager.main_program_name:
+            main_program_config = self.config_manager.get_main_program() # Still need the config for main_program_info
+            if not main_program_config:
+                 logger.error("Could not retrieve main program configuration after starting all programs.")
+                 return False
+
+            self.main_program_info = {
+                "config": main_program_config, # Use the retrieved config
+                "process": self.process_manager.main_program_proc,
+                "pid": self.process_manager.main_program_proc.pid
+            }
+            logger.info(f"Main program '{self.process_manager.main_program_name}' started successfully (PID: {self.process_manager.main_program_proc.pid}).")
             
-            # Start the program
-            success, _ = self.process_manager.start_program(program)
-            if not success:
-                logger.error(f"Error starting '{name}'. Aborting.")
-                return False
-        
-        # Start iRacing last
-        logger.info(f"Starting main program: {main_program['name']}...")
-        success, proc = self.process_manager.start_program(main_program)
-        if not success:
-            logger.error(f"Error starting '{main_program['name']}'. Aborting.")
+            # The new ProcessManager._handle_program_startup_and_minimization and
+            # _minimize_program_persistently should handle minimization robustly.
+            # The explicit retry_minimize_all() call might be redundant or conflict.
+            # logger.info("Performing second minimization run for programs...") # Commenting out for now
+            # self.process_manager.retry_minimize_all() # Commenting out for now
+
+            return True
+        else:
+            logger.error("Main program did not start successfully or its process information is not available.")
+            # Attempt to find the main program config to log its name if it failed
+            main_program_config_for_error = self.config_manager.get_main_program()
+            if main_program_config_for_error:
+                logger.error(f"Failed to start main program: {main_program_config_for_error.get('name', 'Unknown Main Program')}")
+            else:
+                logger.error("Failed to identify or start the main program as defined in configuration.")
             return False
-        
-        # Store information about the main program for monitoring
-        self.main_program_info = {
-            "config": main_program,
-            "process": proc,
-            "pid": proc.pid
-        }
-        
-        # Try again to minimize all windows that were not minimized at first attempt
-        logger.info("Performing second minimization run for programs...")
-        self.process_manager.retry_minimize_all()
-        
-        return True
 
     def watch_iracing(self) -> None:
         """

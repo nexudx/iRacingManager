@@ -149,6 +149,26 @@ class ConfigManager:
                                    f"and '{program['name']}'. Using '{program['name']}' as the main program.")
                 temp_main_program = program
 
+            # Window management strategy system is removed.
+            # The new ProcessManager will handle minimization dynamically.
+            # We can remove the old window_management parsing.
+            # Optional new keys like 'initial_delay_before_minimize_s' will be
+            # accessed directly by ProcessManager using .get() with defaults.
+
+            # Remove the 'window_management' block if it exists from old configs
+            if "window_management" in program:
+                del program["window_management"]
+            
+            # Also remove other old strategy-related top-level keys if they exist
+            # to prevent them from being passed to ProcessManager unexpectedly.
+            old_strategy_keys = ["has_splash_screen", "systray_only", "window_titles"]
+            for old_key in old_strategy_keys:
+                if old_key in program:
+                    del program[old_key]
+            
+            # Ensure 'starts_in_tray' defaults to False if not present
+            program['starts_in_tray'] = program.get('starts_in_tray', False)
+            
             validated_programs.append(program)
 
         self.programs = validated_programs
@@ -160,10 +180,19 @@ class ConfigManager:
              raise ConfigError("Internal Error: No programs validated.")
 
         if not self.main_program:
+            # If no program is explicitly marked as main, use the last one.
+            last_program = self.programs[-1]
             logger.warning("Warning: No main program (is_main=true) defined. "
-                           "Using the last program ('%s') as the main program.", self.programs[-1]['name'])
-            self.main_program = self.programs[-1]
-        # If self.main_program is already set (from _validate_programs_list), we use that one.
+                           "Using the last program ('%s') as the main program.", last_program['name'])
+            self.main_program = last_program
+            # Ensure 'is_main' is set to True for this implicitly chosen main program
+            # so other parts of the system can reliably check it.
+            if not self.main_program.get("is_main"):
+                 self.main_program["is_main"] = True
+        # If self.main_program was set because a program had "is_main": true,
+        # that's the one we use. No further window_management defaulting is needed here
+        # as that system is removed.
+
 
     def get_programs(self) -> List[Dict[str, Any]]:
         """

@@ -24,14 +24,14 @@ if WINDOWS_IMPORTS_AVAILABLE:
     import win32gui
     import win32con
     import win32process
-    import psutil
+ 
 
-
+ 
 class WindowManager:
     """
     Handles finding and manipulating windows for external processes.
     
-    Provides methods to find windows by process ID, minimize windows, 
+    Provides methods to find windows by process ID, minimize windows,
     and handle specialized window manipulation tasks.
     """
     
@@ -138,22 +138,20 @@ class WindowManager:
         
         return success
 
-    def minimize_all_windows_of_process(self, pid: int, program_name: str, is_oculus: bool = False, oculus_window_titles=None) -> bool:
+    def minimize_all_windows_of_process(self, pid: int, program_name: str) -> bool:
         """
         Minimizes all visible windows of a specific process.
         
-        Particularly useful for:
-        - Programs that open multiple parallel windows
-        - Programs that open new windows later
+        Useful for strategies that need to ensure all windows of a process are minimized.
         
         Args:
             pid (int): Process ID of the program to monitor
             program_name (str): Name of the program for differentiated logging
-            is_oculus (bool): Whether this is an Oculus process (for specialized handling)
-            oculus_window_titles (list): List of possible Oculus window titles (required if is_oculus=True)
 
         Returns:
-            bool: True if at least one window was found and minimized, otherwise False
+            bool: True if at least one window was found and an attempt to minimize was made,
+                  False if no windows were found or an error occurred.
+                  Note: This method doesn't re-verify minimization success like `minimize_window`.
         """
         if not WINDOWS_IMPORTS_AVAILABLE:
             return False
@@ -162,25 +160,19 @@ class WindowManager:
             windows = self.find_process_windows(pid)
             
             if not windows:
+                logger.debug(f"No windows found for PID {pid} ('{program_name}') to minimize.")
                 return False
                 
             # Minimize all found windows
+            minimized_at_least_one = False
             for hwnd in windows:
                 window_title = win32gui.GetWindowText(hwnd)
+                logger.info(f"Minimizing window: '{window_title}' for '{program_name}' (PID: {pid})")
+                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+                minimized_at_least_one = True
                 
-                # Check if it's an Oculus main window
-                is_oculus_main = is_oculus and oculus_window_titles and \
-                                any(oculus_title in window_title for oculus_title in oculus_window_titles)
-
-                if is_oculus_main:
-                    logger.info(f"Oculus main window found: '{window_title}'. Minimizing it.")
-                    win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                else:
-                    logger.info(f"Additional window found and minimizing: '{window_title}' for '{program_name}'")
-                    win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                
-            return True
+            return minimized_at_least_one
             
         except Exception as e:
-            logger.error(f"Error minimizing all windows for '{program_name}': {e}")
+            logger.error(f"Error minimizing all windows for '{program_name}' (PID: {pid}): {e}")
             return False
