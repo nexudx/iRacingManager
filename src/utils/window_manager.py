@@ -6,8 +6,7 @@ Window management for the iRacing Manager.
 
 This module is responsible for:
 1. Finding windows belonging to specific processes
-2. Minimizing windows with retries and specialized handling
-3. Providing window manipulation utilities
+2. Minimizing windows with retries and verification
 """
 
 import time
@@ -137,42 +136,3 @@ class WindowManager:
                 logger.error(f"Error minimizing window for '{program_name}' (Attempt {attempt}/{max_attempts}): {e}")
         
         return success
-
-    def minimize_all_windows_of_process(self, pid: int, program_name: str) -> bool:
-        """
-        Minimizes all visible windows of a specific process.
-        
-        Useful for strategies that need to ensure all windows of a process are minimized.
-        
-        Args:
-            pid (int): Process ID of the program to monitor
-            program_name (str): Name of the program for differentiated logging
-
-        Returns:
-            bool: True if at least one window was found and an attempt to minimize was made,
-                  False if no windows were found or an error occurred.
-                  Note: This method doesn't re-verify minimization success like `minimize_window`.
-        """
-        if not WINDOWS_IMPORTS_AVAILABLE:
-            return False
-            
-        try:
-            windows = self.find_process_windows(pid)
-            
-            if not windows:
-                logger.debug(f"No windows found for PID {pid} ('{program_name}') to minimize.")
-                return False
-                
-            # Minimize all found windows
-            minimized_at_least_one = False
-            for hwnd in windows:
-                window_title = win32gui.GetWindowText(hwnd)
-                logger.info(f"Minimizing window: '{window_title}' for '{program_name}' (PID: {pid})")
-                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                minimized_at_least_one = True
-                
-            return minimized_at_least_one
-            
-        except Exception as e:
-            logger.error(f"Error minimizing all windows for '{program_name}' (PID: {pid}): {e}")
-            return False

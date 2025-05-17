@@ -17,7 +17,6 @@ and the other components of the system.
 
 import json
 import os
-import sys
 import logging
 from typing import Dict, List, Any, Optional
 

@@ -32,9 +32,9 @@ from src.utils.window_manager import WindowManager
 logger = logging.getLogger("ProcessManager")
 
 # Constants for persistent minimization
-DEFAULT_MAX_MINIMIZE_ATTEMPTS = 15  # e.g., 15 attempts
-DEFAULT_MINIMIZE_RETRY_DELAY = 2.0  # e.g., 2 seconds delay
-DEFAULT_PROGRAM_START_TIMEOUT = 60 # e.g. 60 seconds for a program to start and its window to appear
+DEFAULT_MAX_MINIMIZE_ATTEMPTS = 6  # e.g., 6 attempts
+DEFAULT_MINIMIZE_RETRY_DELAY = 1.0  # e.g., 1 second delay
+DEFAULT_PROGRAM_START_TIMEOUT = 15 # e.g. 15 seconds for a program to start and its window to appear
 class ProcessManager:
     """
     Main class for managing processes for the iRacing Manager.
@@ -52,7 +52,6 @@ class ProcessManager:
         self._terminated_programs: set[str] = set()
         self._window_manager = WindowManager()
         self._check_requirements()
-        self.program_start_threads: List[threading.Thread] = []
         self.main_program_proc: Optional[subprocess.Popen] = None
         self.main_program_name: Optional[str] = None
         # For managing parallel startup of helper apps
@@ -69,6 +68,9 @@ class ProcessManager:
         """
         Handles the startup of a single program and its minimization if it's a helper app.
         This method is intended to be run in a separate thread for helper applications.
+
+        Returns:
+            Tuple[bool, Optional[subprocess.Popen], str]: (success_status, process_object_or_None, program_name)
         """
         name = program_config["name"]
         path = program_config["path"]
@@ -103,13 +105,11 @@ class ProcessManager:
             )
 
             if is_main:
-                # Add a small delay and check if the main program is still running
-                time.sleep(2.0) # Wait 2 seconds
+                # Add a small delay to allow the main program to initialize or fail fast,
+                # then check if it's still running.
+                time.sleep(2.0)
                 if proc.poll() is not None:
                     logger.error(f"Main program '{name}' (PID: {proc.pid}) terminated shortly after launch with exit code {proc.returncode}.")
-                    # Attempt to read stdout/stderr if not DEVNULL (though we set them to None for main)
-                    # This part might be tricky if they were not piped.
-                    # For now, the direct console output from iRacing is the primary debug info.
                     return False, proc, name # Indicate failure
 
             # Store process information immediately
@@ -200,9 +200,12 @@ class ProcessManager:
     def _is_pid_running(self, pid: int) -> bool:
         """Checks if a process with the given PID is running."""
         if not WINDOWS_IMPORTS_AVAILABLE:
-            # Cannot check without psutil on Windows, assume running to proceed
-            # Or, could check self.processes if the Popen object is still valid
-            return True
+            # Fallback if psutil is not available (e.g., non-Windows or missing dependency)
+            # Check our internal records.
+            for p_info in self.processes.values():
+                if p_info["pid"] == pid:
+                    return p_info["process"].poll() is None
+            return False # PID not found in our managed processes
         try:
             import psutil
             return psutil.pid_exists(pid)
@@ -356,29 +359,18 @@ class ProcessManager:
                         logger.debug(f"OS error during fallback termination for '{program_name}': {e}")
                         pass
 
-            # Remove the program from the active list *after* attempting termination
+            # Termination attempt finished (or process was already gone).
+            # This part is the end of the 'try' block's normal execution path.
             if program_name in self.processes:
                 del self.processes[program_name]
-            
-            # If the program is in the non-minimized list, remove it from there too - This list is removed
-            # No longer need to check non_minimized_windows
-            # if program_name in self.non_minimized_windows:
-            #     del self.non_minimized_windows[program_name]
-                
             return True
-            
+        # This 'except' is now correctly aligned with the 'try' starting at line 335.
         except Exception as e:
-            logger.error(f"Error terminating '{program_name}': {e}")
-            
-            # Even in case of error, remove from the list to avoid repeated termination attempts
+            logger.error(f"Error during the termination process for '{program_name}': {e}")
+            # Even in case of error, ensure it's removed from the list.
             if program_name in self.processes:
                 del self.processes[program_name]
-            # No longer need to check non_minimized_windows
-            # if program_name in self.non_minimized_windows:
-            #     del self.non_minimized_windows[program_name]
-                
             return False
-
     def terminate_all_programs(self) -> None:
         """
         Terminates all started programs cleanly and in the correct order.
@@ -407,9 +399,8 @@ class ProcessManager:
                 self.terminate_program(name)
         
         # After termination, ensure all lists are actually empty
-        self.processes.clear() # More direct way to empty
-        # self.non_minimized_windows.clear() # This list is removed
-        self._terminated_programs.clear() # Ensure this is also cleared
+        self.processes.clear()
+        self._terminated_programs.clear()
         
         # Wait for any helper app threads to finish if they are still running (e.g. if terminate_all is called early)
         # This is a bit tricky as threads might be in Popen.wait() or time.sleep()
@@ -459,9 +450,6 @@ class ProcessManager:
             else:
                 # Remove no longer running programs from the list
                 del self.processes[name]
-                # Also remove from the non-minimized list if present - This list is removed
-                # if name in self.non_minimized_windows:
-                #     del self.non_minimized_windows[name]
                 
         return running_programs
 
@@ -476,7 +464,6 @@ class ProcessManager:
         self.terminate_all_programs()
 
         self.processes.clear()
-        # self.non_minimized_windows.clear() # This list is removed
         self._terminated_programs.clear()
         self.main_program_proc = None
         self.main_program_name = None
