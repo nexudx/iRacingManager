@@ -2,20 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-iRacing Manager - Main Program
+iRacing Manager - Core Orchestration.
 
-This module serves as the central coordination point of the iRacing Manager.
-It orchestrates the complete workflow:
-
-1. Reading the configuration (via ConfigManager)
-2. Starting all helper programs in the correct order (via ProcessManager)
-3. Starting iRacing as the main program
-4. Continuous monitoring of the iRacing process (via iRacingWatcher)
-5. Automatically terminating all programs when iRacing is closed
-6. Clean handling of signals and program termination
-
-All external actions (process start, window minimization, process monitoring)
-are delegated to the specialized helper modules.
+Coordinates config, program startup (helpers, then iRacing),
+iRacing process monitoring, and auto-shutdown.
+Delegates actions to helper modules.
 """
 
 import os
@@ -25,293 +16,193 @@ import logging
 import signal
 import atexit
 import threading
-import argparse # Import argparse
+import argparse
 from typing import Dict, List, Any, Optional
 
-# Import the other modules - updated imports for new structure
+# Imports
 from src.utils.config_manager import ConfigManager, ConfigError
 from src.core.process_manager import ProcessManager
 from src.core.iracing_watcher import iRacingWatcher
 from src.ui.console_ui import setup_console_ui
 
-# Set up logger but don't add handlers yet - the console UI will handle that
+# Logger
 logger = logging.getLogger("iRacingManager")
 logger.setLevel(logging.INFO)
 
-# We'll set up the console UI in the main function to ensure proper initialization order
-# This will also properly redirect all output through our frame
+# UI setup in main()
 
 
 class iRacingManager:
     """
-    Main class for the iRacing Manager.
+    Core iRacing Manager class.
 
-    This class forms the heart of the system and is responsible for:
-    - Initialization and configuration of all components
-    - Execution of the main workflow (program start and monitoring)
-    - Handling of signals and clean termination
-    - Response to the closing of iRacing
-
-    The actual functionality is implemented by the following helper classes:
-    - ConfigManager: Loads and manages the configuration
-    - ProcessManager: Starts, minimizes, and terminates programs
-    - iRacingWatcher: Monitors the iRacing process
-
-    All actions are logged to facilitate troubleshooting.
+    Handles init, config, main workflow (start/monitor),
+    signal handling, clean termination, and iRacing exit response.
+    Uses ConfigManager, ProcessManager, iRacingWatcher. Logs actions.
     """
 
     def __init__(self, config_path: str = "config/config.json"):
-        """
-        Initializes the iRacing Manager.
-
-        Args:
-            config_path (str): Path to the configuration file. Default is 'config/config.json'.
-        """
+        """Init. Args: config_path (str, default 'config/config.json')."""
         logger.info("Initializing iRacing Manager...")
-        self._cleanup_done = False # Initialize cleanup flag
+        self._cleanup_done = False # Cleanup flag
         self.config_manager = ConfigManager(config_path)
         self.process_manager = ProcessManager()
         self.iracing_watcher = None
         self.main_program_info: Optional[Dict[str, Any]] = None
-        self._stop_event = threading.Event() # Event to signal termination
+        self._stop_event = threading.Event() # Termination signal
 
-        # Register signal handlers for graceful shutdown
+        # Signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
-        atexit.register(self._cleanup) # Ensure cleanup runs on exit
+        atexit.register(self._cleanup) # Ensure cleanup on exit
 
     def _signal_handler(self, sig, frame) -> None:
-        """
-        Handler for operating system signals (SIGINT, SIGTERM).
-        
-        This method is called when:
-        - The user presses Ctrl+C (SIGINT)
-        - The system wants to terminate the program (SIGTERM)
-        - Other termination signals are sent
-        
-        It ensures a clean termination by:
-        1. Logging the signal
-        2. Performing the cleanup (_cleanup)
-        3. Terminating the program with exit code 0
-        
-        Args:
-            sig: The received signal
-            frame: The current stack frame
-        """
-        logger.info(f"Signal {sig} received. Initiating shutdown...")
-        self._stop_event.set() # Signal the main loop to exit
+        """OS signal handler (SIGINT, SIGTERM). Logs, sets stop event."""
+        logger.info(f"Signal {sig} received by _signal_handler. Frame: {frame}")
+        logger.info("Setting _stop_event in _signal_handler...")
+        self._stop_event.set() # Signal main loop exit
+        logger.info("_stop_event set in _signal_handler.")
 
     def _cleanup(self) -> None:
-        """
-        Central cleanup function for clean program termination.
-        
-        This method is called:
-        - At normal program end
-        - During signal handling (Ctrl+C)
-        - By atexit (registered during initialization)
-        - On unexpected errors
-        
-        It ensures the following cleanup tasks:
-        1. Avoids multiple executions through the _cleanup_done flag
-        2. Stops the iRacing monitoring if active
-        3. Terminates all started programs through the ProcessManager
-        
-        This ensures that no processes continue running in the background,
-        even if the iRacing Manager is unexpectedly terminated.
-        """
-        # Prevent multiple executions of the cleanup tasks
+        """Central cleanup: stops watcher, terminates progs. Prevents multiple runs."""
+        logger.info(f"_cleanup called. _cleanup_done is {self._cleanup_done}")
+        # Prevent multiple cleanups
         if not self._cleanup_done:
-            logger.info("Performing cleanup tasks...")
+            logger.info("Performing cleanup tasks in _cleanup...")
 
-            # Mark as done immediately to prevent re-entry
-            self._cleanup_done = True
+            self._cleanup_done = True # Mark done
+            logger.debug("_cleanup_done set to True.")
 
-            # Stop the monitoring if active
-            # Check if iracing_watcher exists and has the method before calling
+            # Stop watcher
             if hasattr(self, 'iracing_watcher') and self.iracing_watcher:
+                logger.info("Attempting to stop iracing_watcher in _cleanup...")
                 try:
                     self.iracing_watcher.stop_watching()
+                    logger.info("iracing_watcher.stop_watching() called successfully in _cleanup.")
                 except Exception as e:
-                    logger.error(f"Error stopping iRacing watcher during cleanup: {e}")
+                    logger.error(f"Error stopping watcher in _cleanup: {e}")
+            else:
+                logger.info("iracing_watcher not present or not initialized in _cleanup.")
 
-            # Terminate all started programs
-            # Check if process_manager exists and has the method before calling
+            # Terminate programs
             if hasattr(self, 'process_manager') and self.process_manager:
+                logger.info("Attempting to terminate all programs via process_manager in _cleanup...")
                 try:
                     self.process_manager.terminate_all_programs()
+                    logger.info("process_manager.terminate_all_programs() called successfully in _cleanup.")
                 except Exception as e:
-                    logger.error(f"Error terminating programs during cleanup: {e}")
-            logger.info("Cleanup tasks finished.")
+                    logger.error(f"Error terminating programs in _cleanup: {e}")
+            else:
+                logger.info("process_manager not present or not initialized in _cleanup.")
+            logger.info("Cleanup tasks finished in _cleanup.")
+        else:
+            logger.info("_cleanup already performed, skipping.")
 
 
     def start_programs(self) -> bool:
-        """
-        Starts all configured programs in the correct order.
-        
-        This method:
-        1. Loads the program configurations from the ConfigManager
-        2. First starts all helper programs (non-iRacing)
-        3. Then starts iRacing as the last program
-        4. Performs a second minimization run for programs that could not be minimized immediately
-        
-        The two-stage start process ensures that all helper programs are already running
-        when iRacing is started.
-
-        Returns:
-            bool: True if all programs were successfully started, otherwise False
-        """
+        """Starts configured programs (helpers then main). Returns True on success."""
         logger.info("Starting all configured programs...")
-        all_program_configs = self.config_manager.get_programs() # Get all program configs
+        logger.info("Starting all configured programs...")
+        all_program_configs = self.config_manager.get_programs()
         
-        # The ProcessManager.start_all_programs will handle main vs helper apps
-        # It also handles parallel startup and minimization.
+        # PM handles start order, parallelism, minimization.
         self.process_manager.start_all_programs(all_program_configs)
 
-        # After start_all_programs, ProcessManager should have main_program_proc and main_program_name populated
+        # Check main program status
         if self.process_manager.main_program_proc and self.process_manager.main_program_name:
-            main_program_config = self.config_manager.get_main_program() # Still need the config for main_program_info
+            main_program_config = self.config_manager.get_main_program()
             if not main_program_config:
-                 logger.error("Could not retrieve main program configuration after starting all programs.")
+                 logger.error("Main program config not found after start.")
                  return False
 
             self.main_program_info = {
-                "config": main_program_config, # Use the retrieved config
+                "config": main_program_config,
                 "process": self.process_manager.main_program_proc,
                 "pid": self.process_manager.main_program_proc.pid
             }
-            logger.info(f"Main program '{self.process_manager.main_program_name}' started successfully (PID: {self.process_manager.main_program_proc.pid}).")
+            logger.info(f"Main program '{self.process_manager.main_program_name}' started (PID: {self.process_manager.main_program_proc.pid}).")
             
-            # The new ProcessManager._handle_program_startup_and_minimization and
-            # _minimize_program_persistently should handle minimization robustly.
-            # The explicit retry_minimize_all() call might be redundant or conflict.
-            # logger.info("Performing second minimization run for programs...") # Commenting out for now
-            # self.process_manager.retry_minimize_all() # Commenting out for now
+            # Minimization handled by ProcessManager.
+            # logger.info("Performing second minimization run for programs...") # Redundant
+            # self.process_manager.retry_minimize_all() # Redundant
 
             return True
         else:
-            logger.error("Main program did not start successfully or its process information is not available.")
-            # Attempt to find the main program config to log its name if it failed
+            logger.error("Main program failed to start or info unavailable.")
             main_program_config_for_error = self.config_manager.get_main_program()
             if main_program_config_for_error:
-                logger.error(f"Failed to start main program: {main_program_config_for_error.get('name', 'Unknown Main Program')}")
+                logger.error(f"Failed to start: {main_program_config_for_error.get('name', 'Unknown Main Program')}")
             else:
-                logger.error("Failed to identify or start the main program as defined in configuration.")
+                logger.error("Failed to identify/start main program from config.")
             return False
-
     def watch_iracing(self) -> None:
-        """
-        Starts the continuous monitoring of the iRacing process.
-        
-        This method:
-        1. Checks if iRacing was successfully started
-        2. Creates an iRacingWatcher with a callback for the termination (_on_iracing_exit)
-        3. Finds the iRacing process using the stored information
-        4. Starts the active monitoring in a separate thread
-        
-        The monitoring runs continuously in the background until iRacing is terminated
-        or the user stops the manager with Ctrl+C.
-        """
+        """Starts monitoring the main program process in a new thread."""
         if not self.main_program_info:
             logger.error("No main program found to monitor.")
             return
             
-        logger.info("Starting the monitoring of the main program...")
+        logger.info("Starting main program monitoring...")
         
-        # Create the watcher with callback function
         self.iracing_watcher = iRacingWatcher(on_exit_callback=self._on_iracing_exit)
         
-        # Find the iRacing process
         if not self.iracing_watcher.find_iracing_process(self.main_program_info):
-            logger.error("Could not find the main program for monitoring.")
+            logger.error("Could not find main program to monitor.")
             return
             
-        # Start the monitoring
         self.iracing_watcher.start_watching()
         
-        logger.info(f"Monitoring of the main program active. Press Ctrl+C to exit.")
+        logger.info(f"Main program monitoring active. Ctrl+C to exit.")
 
     def _on_iracing_exit(self) -> None:
-        """
-        Callback function triggered when iRacing is terminated.
+        """Callback for main program termination. Stops watcher, progs, signals main loop."""
+        logger.info("_on_iracing_exit callback triggered.")
         
-        This central method is called by the iRacingWatcher as soon as
-        the termination of the iRacing process is detected. It is the core
-        of the automation functionality of the manager.
-        
-        The method performs the following actions:
-        1. Logging the termination of iRacing
-        2. Stopping the monitoring to free up resources
-        3. Coordinated termination of all helper programs
-        4. Logging of successful completion
-        
-        This function doesn't terminate the process itself but sets the
-        watcher to a state that allows proper termination of the main loop.
-        """
-        logger.info("Main program has been terminated. Terminating all other programs...")
-        
-        # Stop the monitoring
         if self.iracing_watcher:
-            self.iracing_watcher.stop_watching()
+            logger.info("Attempting to stop iracing_watcher in _on_iracing_exit...")
+            try:
+                self.iracing_watcher.stop_watching() # Stop monitoring
+                logger.info("iracing_watcher.stop_watching() called successfully in _on_iracing_exit.")
+            except Exception as e:
+                logger.error(f"Error stopping watcher in _on_iracing_exit: {e}")
+        else:
+            logger.info("iracing_watcher not present in _on_iracing_exit (already stopped or not initialized).")
             
-        # Terminate all started programs
-        self.process_manager.terminate_all_programs()
+        logger.info("Attempting to terminate all programs via process_manager in _on_iracing_exit...")
+        try:
+            self.process_manager.terminate_all_programs() # Terminate helpers
+            logger.info("process_manager.terminate_all_programs() called successfully in _on_iracing_exit.")
+        except Exception as e:
+            logger.error(f"Error terminating programs in _on_iracing_exit: {e}")
         
-        logger.info("All programs have been terminated.")
-        self._stop_event.set() # Signal the main loop to exit
+        logger.info("Setting _stop_event in _on_iracing_exit...")
+        self._stop_event.set() # Signal main loop exit
+        logger.info("_stop_event set in _on_iracing_exit. All programs should be terminated.")
 
     def run(self) -> None:
-        """
-        Main method to execute the complete iRacing Manager workflow.
-        
-        This method coordinates the complete lifecycle of the manager:
-        1. Logging of program start
-        2. Starting all configured programs
-        3. Setting up the iRacing monitoring
-        4. Continuous checking of the monitoring status
-        5. Catching user interruptions (KeyboardInterrupt)
-        6. Calling the cleanup routines at program end
-        
-        The method implements a robust main loop that continuously
-        monitors whether the iRacing process is still active and reacts accordingly.
-        """
-        # Start all programs
-        if not self.start_programs():
-            logger.error("Error starting the programs. Exiting...")
+        """Executes main manager workflow: start progs, monitor, wait for exit."""
+        if not self.start_programs(): # Start programs
+            logger.error("Error starting programs. Exiting...")
             self._cleanup()
             sys.exit(1)
         
-        # Monitor iRacing
-        self.watch_iracing()
+        self.watch_iracing() # Monitor main program
         
-        # Keep the main program running until the stop event is set
-        # (either by iRacing exiting or by a signal like Ctrl+C)
+        # Wait for stop (main exit or Ctrl+C)
         if self.iracing_watcher and self.iracing_watcher.is_watching():
-            logger.info("Manager running in the background. Waiting for main program exit or Ctrl+C...")
-            self._stop_event.wait() # Wait here until event is set
+            logger.info("Manager running. Waiting for main program exit or Ctrl+C...")
+            self._stop_event.wait() # Wait for signal
             logger.info("Stop event received.")
         elif not self.main_program_info:
-             logger.warning("Main program info not available, cannot wait for termination signal.")
+             logger.warning("Main program info unavailable; cannot wait for termination.")
         else:
-             logger.warning("iRacing watcher not active, cannot wait for termination signal.")
+             logger.warning("Watcher not active; cannot wait for termination.")
 
-        # Cleanup is handled by atexit, no need for explicit call here unless specific logic needed before exit
+        # atexit handles cleanup.
         logger.info("iRacing Manager shutting down.")
 
 
 def main() -> None:
-    """
-    Entry point for the iRacing Manager.
-    
-    This function:
-    1. Parses command line arguments for an optional configuration path.
-    2. Sets up the console UI with logo and framed log display.
-    3. Creates an instance of iRacingManager.
-    4. Starts the main method run().
-    5. Catches configuration errors and unexpected exceptions, logs them, and exits.
-
-    The function ensures clean error handling at the top level
-    and is the main entry point of the program when directly executed.
-    """
+    """App entry point. Parses args, sets up UI, runs manager, handles errors."""
     parser = argparse.ArgumentParser(description="iRacing Manager - Start and manage iRacing and helper applications.")
     parser.add_argument(
         "-c", "--config",
@@ -321,34 +212,24 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        # Set up the console UI with the ASCII logo and framed log display
-        setup_console_ui(logger)
+        setup_console_ui(logger) # Setup UI
         
-        # Create the iRacing Manager instance using the parsed config path
-        manager = iRacingManager(config_path=args.config)
+        manager = iRacingManager(config_path=args.config) # Create manager
 
-        # Start the main workflow
-        manager.run()
+        manager.run() # Run workflow
 
     except (FileNotFoundError, ConfigError) as e:
-        # Log specific configuration or file not found errors and exit
-        logger.error(f"Initialization error: {e}")
+        logger.error(f"Initialization error: {e}") # Config/file errors
         sys.exit(1)
     except KeyboardInterrupt:
-         # Handle Ctrl+C gracefully during startup if needed (though signal handler should cover runtime)
-         logger.info("Shutdown requested by user during startup.")
-         # Cleanup might be partially done by atexit, but ensure manager cleanup runs if initialized
-         if 'manager' in locals() and hasattr(manager, '_cleanup'):
+         logger.info("User shutdown during startup.") # Ctrl+C at startup
+         if 'manager' in locals() and hasattr(manager, '_cleanup'): # Ensure cleanup
              manager._cleanup()
          sys.exit(0)
     except Exception as e:
-        # Log any other unexpected errors during startup or runtime
-        logger.exception(f"An unexpected critical error occurred: {e}")
-        # Attempt cleanup if manager was initialized
-        if 'manager' in locals() and hasattr(manager, '_cleanup'):
+        logger.exception(f"Unexpected critical error: {e}") # Other errors
+        if 'manager' in locals() and hasattr(manager, '_cleanup'): # Attempt cleanup
              manager._cleanup()
         sys.exit(1)
-
-
 if __name__ == "__main__":
     main()

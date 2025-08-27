@@ -2,16 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Process manager for the iRacing Manager.
-
-This module is responsible for:
-1. Starting external programs (including output redirection)
-2. Minimizing program windows (with special handling for different program types)
-3. Monitoring and minimizing windows that appear later
-4. Clean termination of all started programs
-
-The main class ProcessManager provides an abstract interface for process management,
-independent from the rest of the iRacing Manager system.
+Process Manager: Handles program start, minimization, and termination.
 """
 
 import subprocess
@@ -23,55 +14,38 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Any, Optional, Tuple
 
-# Import our refactored modules with updated paths
+# Imports
 from src.core.utils.process_utils import WINDOWS_IMPORTS_AVAILABLE, check_windows_requirements
 from src.core.utils.window_manager import WindowManager
 
 
-# Set up logger - Configuration should be done in the main entry point
+# Logger
 logger = logging.getLogger("ProcessManager")
 
-# Constants for persistent minimization
-DEFAULT_MAX_MINIMIZE_ATTEMPTS = 6  # e.g., 6 attempts
-DEFAULT_MINIMIZE_RETRY_DELAY = 1.0  # e.g., 1 second delay
-DEFAULT_PROGRAM_START_TIMEOUT = 15 # e.g. 15 seconds for a program to start and its window to appear
+# Minimization constants
+DEFAULT_MAX_MINIMIZE_ATTEMPTS = 6  # Max attempts
+DEFAULT_MINIMIZE_RETRY_DELAY = 1.0  # Retry delay (s)
+DEFAULT_PROGRAM_START_TIMEOUT = 15 # Program start timeout (s)
 class ProcessManager:
-    """
-    Main class for managing processes for the iRacing Manager.
-
-    Provides methods to start, minimize (including retries and special handling),
-    and terminate external programs based on configuration.
-    Requires Windows-specific libraries (pywin32, psutil) for full functionality.
-    """
+    """Manages program start, minimization, termination. Requires Windows libs."""
 
     def __init__(self):
-        """
-        Initializes the ProcessManager.
-        """
+        """Initializes ProcessManager."""
         self.processes: Dict[str, Dict[str, Any]] = {}
         self._terminated_programs: set[str] = set()
         self._window_manager = WindowManager()
         self._check_requirements()
         self.main_program_proc: Optional[subprocess.Popen] = None
         self.main_program_name: Optional[str] = None
-        # For managing parallel startup of helper apps
-        self.helper_app_futures = []
+        self.helper_app_futures = [] # For parallel helper app startup
 
     def _check_requirements(self) -> None:
-        """
-        Checks if all required modules are available.
-        """
+        """Checks for required modules."""
         if not check_windows_requirements():
             sys.exit(1)
 
     def _handle_program_startup_and_minimization(self, program_config: Dict[str, Any]) -> Tuple[bool, Optional[subprocess.Popen], str]:
-        """
-        Handles the startup of a single program and its minimization if it's a helper app.
-        This method is intended to be run in a separate thread for helper applications.
-
-        Returns:
-            Tuple[bool, Optional[subprocess.Popen], str]: (success_status, process_object_or_None, program_name)
-        """
+        """Starts one program, minimizes if helper. For threaded use. Returns (success, proc, name)."""
         name = program_config["name"]
         path = program_config["path"]
         arguments = program_config.get("arguments", "").strip()
@@ -88,13 +62,13 @@ class ProcessManager:
             
             logger.info(f"Starting program: {name} (is_main: {is_main})")
             
-            creation_flags = subprocess.CREATE_NO_WINDOW
+            creation_flags = subprocess.CREATE_NO_WINDOW # No window for helpers
             stdout_pipe = subprocess.DEVNULL
             stderr_pipe = subprocess.DEVNULL
 
             if is_main:
-                logger.info(f"Launching main program '{name}' with visible window. Output will be redirected to DEVNULL.")
-                creation_flags = 0 # Default flags, should show window
+                logger.info(f"Launching main program '{name}' visibly. Output to DEVNULL.")
+                creation_flags = 0 # Show window for main
             
             proc = subprocess.Popen(
                 cmd,
@@ -105,63 +79,44 @@ class ProcessManager:
             )
 
             if is_main:
-                # Add a small delay to allow the main program to initialize or fail fast,
-                # then check if it's still running.
-                time.sleep(2.0)
+                time.sleep(2.0) # Main prog init delay
                 if proc.poll() is not None:
-                    logger.error(f"Main program '{name}' (PID: {proc.pid}) terminated shortly after launch with exit code {proc.returncode}.")
-                    return False, proc, name # Indicate failure
+                    logger.error(f"Main program '{name}' (PID: {proc.pid}) exited early: {proc.returncode}.")
+                    return False, proc, name # Failure
 
-            # Store process information immediately
-            # 'was_minimized' will be updated by the minimization logic for helper apps
+            # Store process info
             self.processes[name] = {
-                "process": proc,
-                "pid": proc.pid,
-                "config": program_config,
-                "was_minimized": True if is_main else False # Main apps are not minimized by this system
+                "process": proc, "pid": proc.pid, "config": program_config,
+                "was_minimized": False # Initial state; updated for helpers later
             }
-            logger.info(f"Program '{name}' (PID: {proc.pid}) started successfully.")
+            logger.info(f"Program '{name}' (PID: {proc.pid}) started.")
 
             if not is_main:
-                # For helper apps, attempt persistent minimization
-                # Allow some time for the process to initialize and potentially create its window
-                time.sleep(program_config.get("initial_delay_before_minimize_s", 2.0)) # Configurable initial delay
+                # Persistent minimization for helper apps
+                time.sleep(program_config.get("initial_delay_before_minimize_s", 2.0)) # Initial delay
                 
-                starts_in_tray = program_config.get("starts_in_tray", False) # Get the flag
+                starts_in_tray = program_config.get("starts_in_tray", False)
                 minimized_successfully = self._minimize_program_persistently(
-                    pid=proc.pid,
-                    program_name=name,
-                    starts_in_tray=starts_in_tray, # Pass the flag
+                    pid=proc.pid, program_name=name, starts_in_tray=starts_in_tray,
                     max_attempts=program_config.get("max_minimize_attempts", DEFAULT_MAX_MINIMIZE_ATTEMPTS),
                     retry_delay=program_config.get("minimize_retry_delay_s", DEFAULT_MINIMIZE_RETRY_DELAY),
                     timeout_seconds=program_config.get("minimize_timeout_s", DEFAULT_PROGRAM_START_TIMEOUT)
                 )
-                if name in self.processes: # Check if process still exists (could have been terminated)
+                if name in self.processes: # Check existence
                     self.processes[name]["was_minimized"] = minimized_successfully
             else:
-                # This is the main program
-                self.main_program_proc = proc
+                self.main_program_proc = proc # Main program
                 self.main_program_name = name
             
             return True, proc, name
         except Exception as e:
-            logger.error(f"Error starting or handling '{name}': {e}")
-            # Ensure it's removed from processes if it failed to start properly
-            if name in self.processes:
+            logger.error(f"Error starting/handling '{name}': {e}")
+            if name in self.processes: # Remove if failed
                 del self.processes[name]
             return False, None, name
 
     def _minimize_program_persistently(self, pid: int, program_name: str, starts_in_tray: bool, max_attempts: int, retry_delay: float, timeout_seconds: float) -> bool:
-        """
-        Persistently attempts to minimize a program's window(s), unless configured to start in tray.
-
-        This method will:
-        1. Check if the program is configured to start in the system tray. If so, skip minimization.
-        2. Loop for a specified number of attempts or until a timeout is reached.
-        3. In each iteration, try to find and minimize the program's windows.
-        4. Use `self._window_manager.minimize_window` which has its own retry logic for finding/minimizing.
-        5. Log attempts, successes, and failures.
-        """
+        """Persistently tries to minimize program window(s), unless starts_in_tray is True."""
         if starts_in_tray:
             logger.info(f"'{program_name}' (PID: {pid}) is configured to start in tray, skipping active window minimization.")
             return True
@@ -175,64 +130,53 @@ class ProcessManager:
                 return False
 
             # Check if the process still exists
-            if not self._is_pid_running(pid):
-                logger.info(f"Process '{program_name}' (PID: {pid}) is no longer running. Stopping minimization attempts.")
-                return False # Or True if we consider a non-running process as "handled"
+            if not self._is_pid_running(pid): # Check process existence
+                logger.info(f"Process '{program_name}' (PID: {pid}) gone. Stopping minimize.")
+                return False # Or True if "handled"
 
             logger.info(f"Attempt {attempt}/{max_attempts} to minimize '{program_name}' (PID: {pid}).")
             
-            # We use minimize_window from WindowManager as it already contains logic
-            # to find and attempt to minimize windows with its own internal retries.
-            # The 'max_attempts' here refers to how many times we call this robust function.
-            # We can configure the inner attempts of minimize_window to be small (e.g. 1-2)
-            # if we want this outer loop to be the main retry controller.
-            # For now, let's assume minimize_window is configured reasonably.
-            if self._window_manager.minimize_window(pid, program_name, max_attempts=3, retry_delay=0.5): # Using short inner attempts
-                logger.info(f"Successfully minimized '{program_name}' (PID: {pid}) on attempt {attempt}.")
+            # WindowManager.minimize_window has its own retries.
+            # Outer loop for more persistent attempts.
+            if self._window_manager.minimize_window(pid, program_name, max_attempts=3, retry_delay=0.5): # Short inner attempts
+                logger.info(f"Minimized '{program_name}' (PID: {pid}) on attempt {attempt}.")
                 return True
             
-            logger.debug(f"Minimization attempt {attempt} for '{program_name}' (PID: {pid}) did not confirm success. Retrying in {retry_delay}s...")
+            logger.debug(f"Minimize attempt {attempt} for '{program_name}' (PID: {pid}) failed. Retrying in {retry_delay}s...")
             time.sleep(retry_delay)
-
         logger.warning(f"Failed to minimize '{program_name}' (PID: {pid}) after {max_attempts} attempts.")
         return False
 
     def _is_pid_running(self, pid: int) -> bool:
-        """Checks if a process with the given PID is running."""
+        """Checks if PID is running. Uses psutil if available, else internal records."""
         if not WINDOWS_IMPORTS_AVAILABLE:
-            # Fallback if psutil is not available (e.g., non-Windows or missing dependency)
-            # Check our internal records.
+            # Fallback: check internal records
             for p_info in self.processes.values():
-                if p_info["pid"] == pid:
-                    return p_info["process"].poll() is None
-            return False # PID not found in our managed processes
-        try:
-            import psutil
-            return psutil.pid_exists(pid)
-        except ImportError:
-            logger.warning("psutil is not installed. Cannot accurately check if PID is running.")
-            # Fallback: Check if we have a Popen object and if it hasn't terminated
-            for p_name, p_info in self.processes.items():
-                if p_info["pid"] == pid:
-                    return p_info["process"].poll() is None
-            return False # PID not found in our managed processes
-        except Exception as e:
-            logger.error(f"Error checking PID {pid} existence: {e}")
-            return False # Assume not running on error
-
+                if p_info["pid"] == pid: return p_info["process"].poll() is None
+            return False # Not found
+        else: # This else corresponds to 'if not WINDOWS_IMPORTS_AVAILABLE:'
+            try:
+                import psutil
+                return psutil.pid_exists(pid)
+            except ImportError:
+                logger.warning("psutil not installed. Using fallback for PID check (Windows).")
+                # Fallback: check Popen object
+                for p_info in self.processes.values(): # Corrected variable, was p_name
+                    if p_info["pid"] == pid: return p_info["process"].poll() is None
+                return False # Not found
+            except Exception as e:
+                logger.error(f"Error checking PID {pid} existence: {e}")
+                return False # Assume not running
     def start_all_programs(self, program_configs: List[Dict[str, Any]], parallel_workers: int = 4) -> None:
-        """
-        Starts all configured programs. Main program is started first, then helper
-        programs are started in parallel.
-        """
+        """Starts main program, then helpers in parallel."""
         main_program_config = None
         helper_program_configs = []
 
         for config in program_configs:
             if config.get("is_main", False):
                 if main_program_config:
-                    logger.warning("Multiple main programs defined. Using the first one.")
-                    helper_program_configs.append(config) # Treat subsequent "main" as helper
+                    logger.warning("Multiple main programs defined. Using first, others as helpers.")
+                    helper_program_configs.append(config) # Subsequent "main" as helper
                 else:
                     main_program_config = config
             else:
@@ -244,7 +188,7 @@ class ProcessManager:
             success, proc, name = self._handle_program_startup_and_minimization(main_program_config)
             if not success:
                 logger.error(f"Main program '{name}' failed to start. Aborting helper app startup.")
-                return # Or handle more gracefully depending on requirements
+                return # Or handle gracefully
             self.main_program_proc = proc
             self.main_program_name = name
         else:
@@ -261,26 +205,23 @@ class ProcessManager:
                     future = executor.submit(self._handle_program_startup_and_minimization, config)
                     self.helper_app_futures.append(future)
                 
-                # Optionally, wait for all helper apps to complete their startup and initial minimization attempt
-                # This loop also helps in retrieving results or exceptions from threads
+                # Wait for helper app startup/minimization, get results/exceptions.
                 for future in as_completed(self.helper_app_futures):
                     try:
                         success, proc_obj, prog_name = future.result()
                         if success:
-                            logger.info(f"Helper program '{prog_name}' (PID: {proc_obj.pid if proc_obj else 'N/A'}) finished startup sequence.")
+                            logger.info(f"Helper '{prog_name}' (PID: {proc_obj.pid if proc_obj else 'N/A'}) startup done.")
                         else:
-                            logger.warning(f"Helper program '{prog_name}' failed or had issues during startup sequence.")
+                            logger.warning(f"Helper '{prog_name}' failed startup.")
                     except Exception as exc:
-                        logger.error(f"A helper program generated an exception during startup: {exc}")
+                        logger.error(f"Helper app startup exception: {exc}")
         else:
             logger.info("No helper programs to start.")
         
         logger.info("All program startup sequences initiated.")
 
     def wait_for_main_program_exit(self, timeout: Optional[float] = None) -> None:
-        """
-        Waits for the main program to exit.
-        """
+        """Waits for main program exit."""
         if self.main_program_proc:
             logger.info(f"Waiting for main program '{self.main_program_name}' (PID: {self.main_program_proc.pid}) to exit...")
             try:
@@ -295,141 +236,153 @@ class ProcessManager:
 
 
     def terminate_program(self, program_name: str) -> bool:
-        """
-        Terminates a program by its name with clean error handling.
-
-        This method ensures reliable termination through:
-        1. Checking if the program has already been terminated (prevents double attempts)
-        2. Using psutil for gentle termination with terminate()
-        3. Falling back to more aggressive kill() method if terminate() doesn't work
-        4. Clean removal of all references from internal lists
-        5. Logging of the termination process
-
-        Args:
-            program_name (str): Name of the program to terminate (as defined in config.json)
-
-        Returns:
-            bool: True if the program was successfully terminated or was already terminated,
-                  False if errors occurred during termination.
-        """
-        # Check if the program has already been terminated
+        """Terminates a program by name. Uses psutil (terminate then kill). Returns True on success."""
+        logger.debug(f"terminate_program called for: '{program_name}'. Current _terminated_programs: {self._terminated_programs}")
+        # Check if already terminated
         if program_name in self._terminated_programs:
-            logger.debug(f"Program '{program_name}' already marked as terminated.")
+            logger.debug(f"Program '{program_name}' already in _terminated_programs set.")
             return True
 
         if program_name not in self.processes:
-            logger.warning(f"Cannot terminate '{program_name}': Not found in the active process list.")
+            logger.warning(f"Cannot terminate '{program_name}': Not found in active self.processes: {list(self.processes.keys())}")
             return False
 
-        # Mark program as "being terminated" immediately to prevent race conditions
-        self._terminated_programs.add(program_name)
+        logger.info(f"Adding '{program_name}' to _terminated_programs set.")
+        self._terminated_programs.add(program_name) # Mark as terminating
 
-        process_info = self.processes.get(program_name) # Use get for safety, though checked above
-        if not process_info: # Should not happen due to check above, but defensive
-            logger.error(f"Internal error: Process info for '{program_name}' disappeared unexpectedly.")
+        process_info = self.processes.get(program_name)
+        if not process_info: # Defensive check
+            logger.error(f"Internal error: Process info for '{program_name}' disappeared after initial check.")
             return False
 
         proc = process_info["process"]
         pid = process_info["pid"]
+        logger.info(f"Attempting to terminate program: '{program_name}' (PID: {pid})")
 
         try:
-            logger.info(f"Terminating program: {program_name} (PID: {pid})")
+            initial_poll = proc.poll()
+            logger.debug(f"Process '{program_name}' (PID: {pid}) poll before termination: {initial_poll}")
             
-            # Try to terminate the process gently first
-            if proc.poll() is None:  # Process is still running
+            if initial_poll is None:  # If running
+                logger.info(f"Process '{program_name}' (PID: {pid}) is running. Proceeding with termination.")
                 if WINDOWS_IMPORTS_AVAILABLE:
                     try:
                         import psutil
+                        logger.debug(f"psutil available. Attempting to get psutil.Process({pid}) for '{program_name}'.")
                         process = psutil.Process(pid)
-                        process.terminate()  # Send SIGTERM
-                        
-                        # If the process is still running, force termination
-                        if proc.poll() is None:
-                            process.kill()  # Send SIGKILL
+                        logger.info(f"Sending SIGTERM to '{program_name}' (PID: {pid}) via psutil.")
+                        process.terminate()  # SIGTERM
+                        try:
+                            # Wait a bit for graceful termination
+                            process.wait(timeout=0.5) # Short wait
+                            logger.info(f"Process '{program_name}' (PID: {pid}) terminated gracefully after SIGTERM.")
+                        except psutil.TimeoutExpired:
+                            logger.warning(f"Process '{program_name}' (PID: {pid}) did not terminate after SIGTERM and 0.5s. Sending SIGKILL.")
+                            process.kill()  # SIGKILL
+                            logger.info(f"SIGKILL sent to '{program_name}' (PID: {pid}).")
+                        except psutil.NoSuchProcess: # Already gone after terminate
+                             logger.info(f"Process '{program_name}' (PID: {pid}) already gone after SIGTERM (NoSuchProcess during wait).")
+                             pass
                     except psutil.NoSuchProcess:
-                        # Process already no longer exists
-                        pass
-                else:
-                    # Fallback if psutil is not available - non-blocking
-                    logger.warning("psutil not available, using basic terminate/kill.")
-                    try:
-                        proc.terminate() # Send SIGTERM
-                    except OSError as e:
-                        # Ignore errors if process already exited
-                        logger.debug(f"OS error during fallback termination for '{program_name}': {e}")
-                        pass
+                        logger.info(f"Process '{program_name}' (PID: {pid}) already gone (NoSuchProcess before terminate/kill).")
+                        pass # Already gone
+                    except ImportError: # Should not happen if WINDOWS_IMPORTS_AVAILABLE is true and psutil is part of it
+                        logger.error("psutil import error during termination despite WINDOWS_IMPORTS_AVAILABLE. This is unexpected.")
+                        # Fallback to Popen.terminate()
+                        logger.warning(f"Falling back to Popen.terminate() for '{program_name}' (PID: {pid}).")
+                        proc.terminate()
+                        time.sleep(0.1) # Brief pause
+                        if proc.poll() is None:
+                            logger.warning(f"Popen.terminate() failed for '{program_name}' (PID: {pid}). Falling back to Popen.kill().")
+                            proc.kill()
+                    except Exception as e_psutil:
+                        logger.error(f"psutil error terminating '{program_name}' (PID: {pid}): {e_psutil}. Falling back.")
+                        proc.terminate() # Fallback
+                        time.sleep(0.1)
+                        if proc.poll() is None: proc.kill()
 
-            # Termination attempt finished (or process was already gone).
-            # This part is the end of the 'try' block's normal execution path.
+                else: # No WINDOWS_IMPORTS_AVAILABLE (implies no psutil)
+                    logger.warning(f"psutil unavailable for '{program_name}' (PID: {pid}). Using basic Popen terminate/kill.")
+                    try:
+                        proc.terminate()
+                        time.sleep(0.1) # Brief pause
+                        if proc.poll() is None: # Still running?
+                            logger.warning(f"Popen.terminate() failed for '{program_name}' (PID: {pid}). Using Popen.kill().")
+                            proc.kill()
+                            logger.info(f"Popen.kill() used for '{program_name}' (PID: {pid}).")
+                        else:
+                            logger.info(f"Popen.terminate() successful for '{program_name}' (PID: {pid}).")
+                    except OSError as e_os: # Ignore if already exited
+                        logger.debug(f"Fallback Popen terminate/kill OSError for '{program_name}' (PID: {pid}): {e_os}")
+                        pass
+            else:
+                logger.info(f"Process '{program_name}' (PID: {pid}) was already terminated (poll result: {initial_poll}).")
+
+            final_poll = proc.poll()
+            logger.debug(f"Process '{program_name}' (PID: {pid}) poll after termination attempts: {final_poll}")
+            
             if program_name in self.processes:
+                logger.debug(f"Removing '{program_name}' from self.processes dict.")
                 del self.processes[program_name]
+            logger.info(f"Termination attempt for '{program_name}' (PID: {pid}) completed. Returning True.")
             return True
-        # This 'except' is now correctly aligned with the 'try' starting at line 335.
         except Exception as e:
-            logger.error(f"Error during the termination process for '{program_name}': {e}")
-            # Even in case of error, ensure it's removed from the list.
-            if program_name in self.processes:
+            logger.error(f"Unhandled exception terminating '{program_name}' (PID: {pid}): {e}")
+            if program_name in self.processes: # Ensure removal on error
+                logger.debug(f"Removing '{program_name}' from self.processes dict due to unhandled exception.")
                 del self.processes[program_name]
             return False
+
     def terminate_all_programs(self) -> None:
-        """
-        Terminates all started programs cleanly and in the correct order.
-        
-        This method:
-        1. Checks if any programs have been started at all to avoid unnecessary actions
-        2. Creates a copy of the program list, since elements are removed during iteration
-        3. Terminates each program individually with error handling
-        4. Logs the progress and completion of the termination process
-        5. Resets all internal state lists
-        
-        The method is idempotent and can be called multiple times without causing problems.
-        """
-        if not self.processes:
-            # If no programs are left in the list, do nothing
+        """Terminates all started programs cleanly. Idempotent."""
+        logger.info(f"terminate_all_programs called. Current processes: {list(self.processes.keys())}")
+        if not self.processes and not self._terminated_programs: # Check both, as _terminated_programs might have entries if called multiple times
+            logger.info("No active programs or programs pending termination. Returning.")
             return
-        
-        logger.info("Terminating all started programs...")
-        
-        # Copy the key list since we'll be removing elements during iteration
-        program_names = list(self.processes.keys())
-        
-        for name in program_names:
-            # Check if the program is still in the list (could have been removed by another thread)
-            if name in self.processes and name not in self._terminated_programs:
-                self.terminate_program(name)
-        
-        # After termination, ensure all lists are actually empty
-        self.processes.clear()
-        self._terminated_programs.clear()
-        
-        # Wait for any helper app threads to finish if they are still running (e.g. if terminate_all is called early)
-        # This is a bit tricky as threads might be in Popen.wait() or time.sleep()
-        # For simplicity, we're not forcefully stopping threads here, assuming terminate_program handles Popen objects.
-        # A more robust solution might involve signaling threads to exit.
+            
+        logger.info("Proceeding to terminate all programs...")
+            
+        program_names_to_terminate = list(self.processes.keys()) # Copy keys for iteration, as terminate_program modifies self.processes
+        logger.debug(f"Programs to iterate for termination: {program_names_to_terminate}")
+            
+        for name in program_names_to_terminate:
+            logger.debug(f"Calling terminate_program for '{name}' from terminate_all_programs.")
+            # terminate_program handles checks for _terminated_programs and self.processes internally
+            self.terminate_program(name)
+            
+        # Post-loop checks and cleanup
+        if self.processes: # Should be empty if all went well
+            logger.warning(f"self.processes not empty after terminate_all_programs loop: {list(self.processes.keys())}. Clearing now.")
+            self.processes.clear()
+
+        if self._terminated_programs: # Should ideally be cleared if this is the final cleanup
+            logger.debug(f"_terminated_programs not empty: {self._terminated_programs}. Clearing now.")
+            self._terminated_programs.clear()
+            
+        # Attempt to let helper app threads finish
+        # Threads not stopped forcefully; Popen handled.
         if self.helper_app_futures:
-            logger.debug("Attempting to ensure helper app threads complete after termination signal.")
-            # Wait for a short period for futures to complete if they haven't already
-            for future in self.helper_app_futures:
+            logger.debug("Ensuring helper app threads (futures) complete post-termination.")
+            active_futures_before_wait = sum(1 for f in self.helper_app_futures if not f.done())
+            logger.debug(f"Number of active futures before waiting: {active_futures_before_wait}")
+
+            for i, future in enumerate(self.helper_app_futures):
                 if not future.done():
+                    logger.debug(f"Waiting for future {i} (max 0.1s)...")
                     try:
                         future.result(timeout=0.1) # Short timeout
-                    except: # Catch any exception, including TimeoutError
-                        pass
+                        logger.debug(f"Future {i} completed or timed out.")
+                    except Exception as e_future: # Catch all, including TimeoutError
+                        logger.warning(f"Exception waiting for future {i}: {e_future}")
+            
+            active_futures_after_wait = sum(1 for f in self.helper_app_futures if not f.done())
+            logger.debug(f"Number of active futures after waiting: {active_futures_after_wait}")
             self.helper_app_futures.clear()
-
-
-        logger.info("All programs have been terminated and ProcessManager state cleared.")
-
+            logger.debug("helper_app_futures cleared.")
+    
+            logger.info("All programs terminated; ProcessManager state cleared after terminate_all_programs.")
     def is_program_running(self, program_name: str) -> bool:
-        """
-        Checks if a program is still running.
-
-        Args:
-            program_name (str): Name of the program to check
-
-        Returns:
-            bool: True if the program is still running, otherwise False
-        """
+        """Checks if a program is running. Args: program_name (str). Returns bool."""
         if program_name not in self.processes:
             return False
         
@@ -437,30 +390,20 @@ class ProcessManager:
         return proc.poll() is None
 
     def get_running_programs(self) -> List[str]:
-        """
-        Returns a list of all running programs.
-
-        Returns:
-            List[str]: List of names of all running programs
-        """
+        """Returns list of running program names."""
         running_programs = []
         for name in list(self.processes.keys()):
             if self.is_program_running(name):
                 running_programs.append(name)
             else:
-                # Remove no longer running programs from the list
-                del self.processes[name]
+                del self.processes[name] # Remove non-running
                 
         return running_programs
 
     def reset(self) -> None:
-        """
-        Resets the ProcessManager, clearing all lists and stopping threads if any.
-        Note: This is a simple reset. For full cleanup during application exit,
-        `terminate_all_programs` should be used.
-        """
+        """Resets ProcessManager. Calls terminate_all_programs first."""
         logger.info("Resetting ProcessManager state.")
-        # Terminate any running programs first before clearing lists
+        # Terminate running programs first
         self.terminate_all_programs()
 
         self.processes.clear()
@@ -468,6 +411,5 @@ class ProcessManager:
         self.main_program_proc = None
         self.main_program_name = None
         
-        # Ensure futures list is cleared
-        if hasattr(self, 'helper_app_futures'):
+        if hasattr(self, 'helper_app_futures'): # Clear futures
             self.helper_app_futures.clear()

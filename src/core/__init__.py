@@ -1,1 +1,1 @@
-# This file makes the src/core directory a Python package
+# core package

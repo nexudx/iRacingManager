@@ -1,1 +1,1 @@
-# This file makes the src/ui directory a Python package
+# ui package
